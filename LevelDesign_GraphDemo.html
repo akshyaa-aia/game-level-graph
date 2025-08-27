@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Level Design with Graphs — Interactive Demo</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root{--bg:#0f1724;--card:#0b1220;--muted:#94a3b8;--accent:#7c3aed}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Arial;color:#e6eef8;background:linear-gradient(180deg,#081023 0%, #071026 100%)}
+    .app{display:grid;grid-template-columns:320px 1fr;gap:12px;height:100vh;padding:16px}
+    .panel{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));border-radius:12px;padding:14px;box-shadow:0 6px 18px rgba(2,6,23,0.6);}
+    h1{font-size:18px;margin:0 0 8px}
+    .controls{display:flex;flex-direction:column;gap:10px}
+    button,select,input{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted);padding:8px;border-radius:8px}
+    button.primary{background:linear-gradient(90deg,var(--accent),#5b21b6);color:white;border:none}
+    .small{font-size:13px}
+    #cy{width:100%;height:100%;border-radius:12px;background:linear-gradient(180deg,#071227 0%,#04111b 100%);}
+    .row{display:flex;gap:8px}
+    label{font-size:13px;color:var(--muted)}
+    textarea{width:100%;height:90px;background:transparent;color:#d9e8ff;border-radius:8px;border:1px solid rgba(255,255,255,0.04);padding:8px}
+    .info{font-size:13px;color:var(--muted)}
+    .list{max-height:140px;overflow:auto;padding:6px;border-radius:8px;border:1px dashed rgba(255,255,255,0.02)}
+    footer{font-size:12px;color:var(--muted);text-align:center;margin-top:8px}
+  </style>
+  <!-- Cytoscape.js CDN -->
+  <script src="https://unpkg.com/cytoscape@3.24.0/dist/cytoscape.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <div class="panel">
+      <h1>Level Design — Graph Editor</h1>
+      <div class="controls">
+        <div class="row">
+          <button id="addNodeBtn">+ Add Node</button>
+          <button id="addEdgeBtn">+ Connect</button>
+          <button id="delBtn">Delete</button>
+        </div>
+
+        <div class="row">
+          <label class="small">Mode:</label>
+          <select id="modeSelect">
+            <option value="select">Select / Move</option>
+            <option value="addEdge">Add Edges</option>
+            <option value="erase">Erase</option>
+          </select>
+        </div>
+
+        <div class="row">
+          <label class="small">Directed:</label>
+          <select id="directedSelect">
+            <option value="true">Directed (DAG / Dependencies)</option>
+            <option value="false">Undirected</option>
+          </select>
+        </div>
+
+        <div class="row">
+          <button id="layoutBtn">Auto Layout</button>
+          <button id="resetViewBtn">Reset View</button>
+        </div>
+
+        <div style="margin-top:8px">
+          <label class="small">Analysis</label>
+          <div class="row">
+            <button id="topoBtn" class="primary">Topological Sort</button>
+            <button id="pathsBtn">Find Paths</button>
+          </div>
+
+          <div style="margin-top:8px">
+            <label class="small">Start</label>
+            <select id="startSelect"></select>
+            <label class="small">Target</label>
+            <select id="targetSelect"></select>
+          </div>
+
+          <div style="margin-top:8px">
+            <label class="small">Results</label>
+            <div class="list" id="results">No results yet.</div>
+          </div>
+        </div>
+
+        <div style="margin-top:10px">
+          <label class="small">Export / Import</label>
+          <div class="row">
+            <button id="exportBtn">Export JSON</button>
+            <button id="importBtn">Import JSON</button>
+          </div>
+          <textarea id="jsonArea" placeholder='Paste exported JSON here to import'></textarea>
+        </div>
+
+        <footer>Tip: Use Directed mode+Topological Sort to enforce prerequisites. Drag nodes to edit layout.</footer>
+      </div>
+    </div>
+
+    <div class="panel" style="display:flex;flex-direction:column">
+      <div id="cy"></div>
+    </div>
+  </div>
+
+  <script>
+    const cy = cytoscape({
+      container: document.getElementById('cy'),
+      style: [
+        { selector: 'node', style: { 'background-color': '#7c3aed', 'label': 'data(label)', 'text-valign':'center','color':'#fff','text-outline-width':1,'text-outline-color':'#3e1f70','width': 'label','height':'label','padding':'8px','shape':'round-rectangle' } },
+        { selector: 'edge', style: { 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'line-color':'#a78bfa','target-arrow-color':'#a78bfa','arrow-scale':1 } },
+        { selector: '.ghost', style: { 'opacity': 0.3 } }
+      ],
+      elements: [],
+      layout: { name: 'cose' }
+    });
+
+    let nodeCounter = 0;
+    let mode = 'select';
+    let directed = true;
+    let addingEdge = { source: null };
+
+    function addNode(x, y, label) {
+      nodeCounter++;
+      const id = 'n' + nodeCounter;
+      cy.add({ group: 'nodes', data: { id, label: label || ("Room " + nodeCounter) }, position: { x: x || cy.width()/2, y: y || cy.height()/2 } });
+      refreshSelects();
+      return id;
+    }
+
+    function addEdge(sourceId, targetId) {
+      if (!sourceId || !targetId || sourceId === targetId) return;
+      const id = 'e' + Date.now();
+      const data = { id, source: sourceId, target: targetId };
+      if (!directed) data['undirected'] = true;
+      cy.add({ group: 'edges', data });
+    }
+
+    function removeSelection() {
+      const sel = cy.$(':selected');
+      sel.remove();
+      refreshSelects();
+    }
+
+    function refreshSelects() {
+      const start = document.getElementById('startSelect');
+      const target = document.getElementById('targetSelect');
+      [start, target].forEach(s => { s.innerHTML = '<option value="">—</option>'; });
+      cy.nodes().forEach(n => {
+        const opt = `<option value="${n.id()}">${n.data('label') || n.id()}</option>`;
+        start.insertAdjacentHTML('beforeend', opt);
+        target.insertAdjacentHTML('beforeend', opt);
+      });
+    }
+
+    function topologicalSort() {
+      const nodes = cy.nodes().map(n => n.id());
+      const edges = cy.edges().map(e => ({ s: e.data('source'), t: e.data('target') }));
+      const indeg = {};
+      const adj = {};
+      nodes.forEach(n => { indeg[n] = 0; adj[n] = []; });
+      edges.forEach(e => { indeg[e.t] = (indeg[e.t] || 0) + 1; adj[e.s].push(e.t); });
+      const q = [];
+      for (const n of nodes) if (indeg[n] === 0) q.push(n);
+      const out = [];
+      while (q.length) {
+        const n = q.shift(); out.push(n);
+        for (const m of adj[n]) { indeg[m]--; if (indeg[m] === 0) q.push(m); }
+      }
+      if (out.length !== nodes.length) return { ok: false, order: out };
+      return { ok: true, order: out };
+    }
+
+    function allSimplePaths(s, t, limit = 2000) {
+      const res = [];
+      const visited = new Set();
+      function dfs(u, path) {
+        if (res.length >= limit) return;
+        if (u === t) { res.push([...path]); return; }
+        visited.add(u);
+        let neighbors = cy.edges().filter(e => e.data('source') === u).map(e => e.data('target'));
+        if (!directed) {
+          cy.edges().forEach(e => {
+            if (e.data('target') === u) neighbors.push(e.data('source'));
+          });
+        }
+        for (const v of neighbors) {
+          if (path.includes(v)) continue; // prevent cycles
+          path.push(v);
+          dfs(v, path);
+          path.pop();
+        }
+        visited.delete(u);
+      }
+      dfs(s, [s]);
+      // remove duplicate paths (by stringifying)
+      const unique = Array.from(new Set(res.map(p => p.join('-')))).map(str => str.split('-'));
+      return unique;
+    }
+
+    document.getElementById('modeSelect').addEventListener('change', e => { mode = e.target.value; });
+    document.getElementById('directedSelect').addEventListener('change', e => { directed = e.target.value === 'true'; });
+    document.getElementById('addNodeBtn').addEventListener('click', ()=> { addNode(); });
+    document.getElementById('addEdgeBtn').addEventListener('click', ()=> { mode = 'addEdge'; document.getElementById('modeSelect').value = 'addEdge'; });
+    document.getElementById('delBtn').addEventListener('click', removeSelection);
+    document.getElementById('layoutBtn').addEventListener('click', ()=> cy.layout({ name: 'cose', animate: true }).run());
+    document.getElementById('resetViewBtn').addEventListener('click', ()=> { cy.fit(); });
+
+    document.getElementById('topoBtn').addEventListener('click', ()=>{
+      const resultsBox = document.getElementById('results');
+      if (!directed) { resultsBox.innerText = 'Topological sort requires a directed graph.'; return; }
+      const res = topologicalSort();
+      if (!res.ok) {
+        resultsBox.innerText = 'Cycle detected — topological sort not possible. Partial order: ' + res.order.join(' → ');
+        cy.nodes().removeClass('ghost'); cy.nodes().filter(n => !res.order.includes(n.id())).addClass('ghost');
+      } else {
+        resultsBox.innerText = 'Topological order: ' + res.order.map(id => cy.getElementById(id).data('label')).join(' → ');
+        cy.nodes().removeClass('ghost');
+      }
+    });
+
+    document.getElementById('pathsBtn').addEventListener('click', ()=>{
+      const s = document.getElementById('startSelect').value;
+      const t = document.getElementById('targetSelect').value;
+      const box = document.getElementById('results');
+      if (!s || !t) { box.innerText = 'Pick both start and target nodes.'; return; }
+      const paths = allSimplePaths(s, t, 5000);
+      if (paths.length === 0) { box.innerText = 'No paths found.'; return; }
+      box.innerHTML = '';
+      paths.forEach(p => {
+        const labels = p.map(id => cy.getElementById(id).data('label'));
+        box.insertAdjacentHTML('beforeend', '<div>' + labels.join(' → ') + '</div>');
+      });
+    });
+
+    document.getElementById('exportBtn').addEventListener('click', ()=>{
+      const json = { nodes: cy.nodes().map(n=>({data:n.data(), position:n.position()})), edges: cy.edges().map(e=>({data:e.data()})), directed };
+      document.getElementById('jsonArea').value = JSON.stringify(json, null, 2);
+    });
+    document.getElementById('importBtn').addEventListener('click', ()=>{
+      try {
+        const raw = document.getElementById('jsonArea').value.trim();
+        if (!raw) return alert('Paste JSON into the textarea first.');
+        const obj = JSON.parse(raw);
+        cy.elements().remove();
+        nodeCounter = 0;
+        if (typeof obj.directed === 'boolean') directed = obj.directed;
+        obj.nodes.forEach(n => { const id = n.data.id || ('n' + (++nodeCounter)); cy.add({ group:'nodes', data:{ id, label:n.data.label||id }, position:n.position || undefined }); });
+        obj.edges.forEach(e => { cy.add({ group:'edges', data:e.data }); });
+        refreshSelects();
+        cy.layout({ name:'cose', animate:true }).run();
+      } catch (err) { alert('Invalid JSON: ' + err.message); }
+    });
+
+    cy.on('tap', function(event){
+      if (event.target.isNode()) {
+        const node = event.target;
+        if (mode === 'addEdge') {
+          if (!addingEdge.source) { addingEdge.source = node.id(); node.addClass('ghost'); }
+          else { const src = addingEdge.source; const tgt = node.id(); addEdge(src, tgt); cy.nodes().removeClass('ghost'); addingEdge.source = null; refreshSelects(); }
+        } else if (mode === 'erase') {
+          node.remove(); refreshSelects();
+        }
+      }
+    });
+
+    cy.on('cxttap', 'node', function(evt){
+      const node = evt.target;
+      const newLabel = prompt('Rename room (label):', node.data('label'));
+      if (newLabel !== null) node.data('label', newLabel);
+      refreshSelects();
+    });
+
+    (function seed(){
+      const s = addNode(80,80,'Start');
+      const v = addNode(200,120,'Village');
+      const f = addNode(340,60,'Forest');
+      const d = addNode(340,180,'Dungeon');
+      const t = addNode(480,120,'Tower');
+      const b = addNode(600,120,'Boss');
+      directed = true; document.getElementById('directedSelect').value = 'true';
+      addEdge(s,v); addEdge(v,f); addEdge(v,d); addEdge(f,t); addEdge(d,t); addEdge(t,b);
+      refreshSelects();
+      cy.layout({ name:'cose', animate:true }).run();
+    })();
+
+    cy.on('add remove data', ()=> refreshSelects());
+    window.addEventListener('resize', ()=> cy.resize());
+  </script>
+</body>
+</html>
